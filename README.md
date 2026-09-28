@@ -166,6 +166,8 @@ ip a
 ```
  
 ![](assets/soal1-rootkit-ip.png)
+
+
 ![](assets/soal1-client-ip.png)
  
 ---
@@ -422,6 +424,8 @@ ls -l /var/cache/bind/db.k45.com
 ```
  
 ![](assets/soal6-serial-sama.png)
+
+
 ![](assets/soal6-axfr-tedd.png)
  
 ---
@@ -459,6 +463,8 @@ dig static.k45.com +short    # -> abbey.k45.com -> 10.86.3.2
 ```
  
 ![](assets/soal7-vault-core.png)
+
+
 ![](assets/soal7-cname-2klien.png)
  
 ---
