@@ -1,6 +1,6 @@
 # JARKOM MODUL 2 2026 - K45
 
-## Member
+## Anggota
 
 | Nama                         | NRP        |
 | -------------                | ---------- |
