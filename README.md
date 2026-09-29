@@ -707,6 +707,10 @@ curl http://desmond.k45.com/arsip/
 Pengujian melalui browser dibuka pada alamat `http://vault.k45.com/arsip/`.
  
 ![](assets/soal9-autoindex-browser.png)
+
+
+
+
 ![](assets/soal9-curl-vault.png)
  
 ---
