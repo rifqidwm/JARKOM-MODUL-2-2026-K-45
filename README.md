@@ -1505,11 +1505,8 @@ Abbey berhasil dikonfigurasi sebagai reverse proxy Nginx untuk area core dan ber
 
 ## 12. Basic Authentication pada `/admin`
 
-### Soal
-
 Membuat Basic Authentication pada path `/admin` di server **Penny**. Hanya username `prabs` dengan password yang telah ditentukan yang dapat mengakses halaman tersebut.
 
-### Tujuan
 
 Membatasi akses ke halaman `/admin` menggunakan username dan password. Path `/admin` juga harus menjadi halaman lokal di Penny dan tidak diteruskan ke backend reverse proxy.
 
@@ -1694,5 +1691,342 @@ Artinya username `admin` ditolak.
 ### Kesimpulan
 
 Basic Authentication pada path `/admin` berhasil diterapkan di Penny. Halaman `/admin` meminta autentikasi, username `prabs` berhasil masuk, sedangkan username lain ditolak dengan status `401 Unauthorized`.
+
+## 13. Canonical Redirect
+
+Membuat canonical redirect pada web server:
+
+* Penny: `penny.xxx.com` diarahkan secara **permanen (301)** ke `www.xxx.com`.
+* Abbey: `abbey.xxx.com` diarahkan secara **sementara (302)** ke `static.xxx.com`.
+* Redirect juga harus berlaku ketika server diakses menggunakan IP address.
+
+Pada praktikum ini digunakan domain `k45.com`.
+
+Membuat redirect otomatis dari domain/IP tertentu menuju domain utama yang telah ditentukan, dengan membedakan jenis redirect:
+
+* **301 Permanent Redirect** pada Penny.
+* **302 Temporary Redirect** pada Abbey.
+
+### Langkah-Langkah
+
+#### 1. Konfigurasi Penny
+
+Konfigurasi Penny berada di:
+
+```bash
+/etc/apache2/sites-available/reverse-proxy.conf
+```
+
+Tambahkan `RewriteEngine` dan aturan redirect berikut di dalam `<VirtualHost *:80>`:
+
+```apache
+RewriteEngine On
+
+RewriteCond %{HTTP_HOST} ^penny\.k45\.com$ [NC,OR]
+RewriteCond %{HTTP_HOST} ^10\.86\.4\.2$ [NC]
+RewriteRule ^/(.*)$ http://www.k45.com/$1 [R=301,L]
+```
+
+Aktifkan modul rewrite:
+
+```bash
+a2enmod rewrite
+```
+
+Kemudian lakukan pengecekan konfigurasi:
+
+```bash
+apache2ctl configtest
+```
+
+Hasil:
+
+```text
+Syntax OK
+```
+
+Restart Apache:
+
+```bash
+service apache2 restart
+```
+
+#### 2. Verifikasi Redirect Penny
+
+Pengujian menggunakan domain:
+
+```bash
+curl -I -H "Host: penny.k45.com" http://10.86.4.2/
+```
+
+Hasil menunjukkan:
+
+```text
+HTTP/1.1 301 Moved Permanently
+Location: http://www.k45.com/
+```
+
+Pengujian menggunakan IP secara langsung:
+
+```bash
+curl -I http://10.86.4.2/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 301 Moved Permanently
+Location: http://www.k45.com/
+```
+
+Dengan demikian, akses melalui `penny.k45.com` maupun IP `10.86.4.2` berhasil diarahkan secara permanen ke `www.k45.com`.
+
+#### 3. Konfigurasi Abbey
+
+Konfigurasi Nginx berada di:
+
+```bash
+/etc/nginx/sites-available/default
+```
+
+Konfigurasi redirect yang digunakan:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name abbey.k45.com 10.86.3.2;
+
+    return 302 http://static.k45.com$request_uri;
+}
+```
+
+Konfigurasi reverse proxy `static.k45.com` tetap dipertahankan untuk meneruskan request ke Oblada dan Molly.
+
+Setelah konfigurasi selesai, dilakukan pengecekan:
+
+```bash
+nginx -t
+```
+
+Hasil:
+
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+Kemudian konfigurasi dimuat ulang:
+
+```bash
+nginx -s reload
+```
+
+#### 4. Verifikasi Redirect Abbey
+
+Pengujian menggunakan domain:
+
+```bash
+curl -I -H "Host: abbey.k45.com" http://10.86.3.2/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 302 Moved Temporarily
+Location: http://static.k45.com/
+```
+
+Pengujian menggunakan IP secara langsung:
+
+```bash
+curl -I http://10.86.3.2/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 302 Moved Temporarily
+Location: http://static.k45.com/
+```
+
+Dengan demikian, akses melalui `abbey.k45.com` maupun IP `10.86.3.2` berhasil diarahkan sementara ke `static.k45.com`.
+
+### Hasil
+
+<img width="690" height="298" alt="Screenshot 2026-09-30 at 02 40 33" src="https://github.com/user-attachments/assets/34cda9e6-2f52-4165-a491-9829b05831b1" />
+
+| Server | Akses           | Status | Tujuan           |
+| ------ | --------------- | -----: | ---------------- |
+| Penny  | `penny.k45.com` |    301 | `www.k45.com`    |
+| Penny  | `10.86.4.2`     |    301 | `www.k45.com`    |
+| Abbey  | `abbey.k45.com` |    302 | `static.k45.com` |
+| Abbey  | `10.86.3.2`     |    302 | `static.k45.com` |
+
+### Kesimpulan
+
+Canonical redirect berhasil diterapkan pada kedua server. Penny menggunakan **301 Permanent Redirect**, sedangkan Abbey menggunakan **302 Temporary Redirect**. Pengujian melalui domain maupun IP menunjukkan hasil redirect sesuai dengan ketentuan praktikum.
+
+## 14. Access Log IP Client Asli
+
+### Soal
+
+Pastikan access log pada setiap web server di dalam `vault` dan `core` mencatat **IP asli client**, bukan IP dari reverse proxy (Penny atau Abbey).
+
+### Tujuan
+
+Membuat web server backend dapat mencatat IP asli client yang mengakses layanan, meskipun request melewati reverse proxy.
+
+### Langkah-Langkah
+
+#### 1. Konfigurasi Apache pada Vault
+
+Pada server **Obladi** dan **Desmond**, ditambahkan format log baru pada `/etc/apache2/apache2.conf`:
+
+```apache
+LogFormat "%{X-Real-IP}i %l %u %t \"%r\" %>s %O \"%{Referer}i\" \"%{User-Agent}i\"" realip
+```
+
+Kemudian konfigurasi `CustomLog` pada `/etc/apache2/sites-enabled/000-default.conf` diubah menjadi:
+
+```apache
+CustomLog ${APACHE_LOG_DIR}/access.log realip
+```
+
+Konfigurasi dicek menggunakan:
+
+```bash
+apache2ctl configtest
+```
+
+Hasil:
+
+```text
+Syntax OK
+```
+
+Apache kemudian di-restart agar konfigurasi baru aktif.
+
+#### 2. Konfigurasi Reverse Proxy Penny
+
+Penny mengirimkan IP client melalui header `X-Real-IP` menggunakan:
+
+```apache
+RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+```
+
+Dengan demikian, IP client diteruskan dari Penny menuju server backend Vault.
+
+#### 3. Konfigurasi Reverse Proxy Abbey
+
+Abbey meneruskan IP client ke backend Core menggunakan:
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+```
+
+#### 4. Konfigurasi Nginx pada Core
+
+Pada **Oblada** dan **Molly**, ditambahkan format log pada `/etc/nginx/nginx.conf`:
+
+```nginx
+log_format realip '$http_x_real_ip - $remote_user [$time_local] "$request" '
+                  '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+```
+
+Kemudian pada `/etc/nginx/sites-available/default` ditambahkan:
+
+```nginx
+access_log /var/log/nginx/access.log realip;
+```
+
+Konfigurasi dicek dengan:
+
+```bash
+nginx -t
+```
+
+Hasil:
+
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+Kemudian konfigurasi diterapkan dengan:
+
+```bash
+nginx -s reload
+```
+
+#### 5. Pengujian dari Alpha
+
+Request dikirim dari **Alpha (`10.86.1.2`)** melalui Abbey:
+
+```bash
+curl -H "Host: static.k45.com" http://10.86.3.2/profil
+```
+
+Kemudian dilakukan beberapa request:
+
+```bash
+for i in $(seq 1 10); do
+    curl -s -H "Host: static.k45.com" http://10.86.3.2/profil
+    echo
+done
+```
+
+#### 6. Verifikasi Log Oblada
+
+Pada Oblada:
+
+```bash
+tail -10 /var/log/nginx/access.log
+```
+
+Hasil menunjukkan:
+
+```text
+10.86.1.2 - - [29/Sep/2026:19:26:36 +0000] "GET /profil HTTP/1.0" 200 ...
+10.86.1.2 - - [29/Sep/2026:19:26:50 +0000] "GET /profil HTTP/1.0" 200 ...
+```
+
+IP `10.86.1.2` merupakan IP Alpha.
+
+#### 7. Verifikasi Log Molly
+
+Pada Molly:
+
+```bash
+tail -10 /var/log/nginx/access.log
+```
+
+Hasil menunjukkan:
+
+```text
+10.86.1.2 - - [29/Sep/2026:19:26:50 +0000] "GET /profil HTTP/1.0" 200 ...
+```
+
+IP `10.86.1.2` juga tercatat pada Molly.
+
+### Hasil
+
+Pengujian membuktikan bahwa:
+
+| Server Backend | IP yang tercatat | Keterangan    |
+| -------------- | ---------------- | ------------- |
+| Oblada         | `10.86.1.2`      | IP asli Alpha |
+| Molly          | `10.86.1.2`      | IP asli Alpha |
+
+Sebelumnya request yang berasal dari reverse proxy dapat terlihat sebagai `10.86.3.2` (IP Abbey). Setelah konfigurasi `X-Real-IP`, server backend mencatat `10.86.1.2`, yaitu IP asli client.
+
+### Kesimpulan
+
+Konfigurasi access log pada seluruh server backend `vault` dan `core` telah berhasil. IP asli client dapat diteruskan melalui reverse proxy dan tercatat pada access log backend.
+
+<img width="692" height="215" alt="Screenshot 2026-09-30 at 02 58 52" src="https://github.com/user-attachments/assets/18e41951-234c-48b0-a018-68bd1245250f" />
+
+<img width="694" height="365" alt="Screenshot 2026-09-30 at 02 59 20" src="https://github.com/user-attachments/assets/1ab970d6-7e04-4667-8676-699b2e74b87b" />
 
 
