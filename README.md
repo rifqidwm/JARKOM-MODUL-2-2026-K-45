@@ -1244,4 +1244,262 @@ curl -s http://core.k45.com/profil
  
 Bila salah satu `dig` menghasilkan `connection refused` ke `10.86.5.2#53` atau `10.86.5.3#53`, layanan bind pada prab atau tedd sedang tidak berjalan, dan blok node tersebut dijalankan kembali. Bila `ping google.com` gagal sementara `ping` ke alamat internal berhasil, aturan *forwarding* dan NAT pada rootkit dijalankan kembali.
  
+## 11. Reverse Proxy dan Load Balancing
+
+Konfigurasikan **Penny** menggunakan Apache sebagai *reverse proxy* menuju seluruh node pada area **vault** (Obladi & Desmond). Konfigurasikan **Abbey** menggunakan Nginx sebagai *reverse proxy* menuju area **core** (Oblada & Molly).
+
+Pastikan kedua gateway meneruskan identitas asli pengunjung dengan melakukan *forwarding* header **Host** dan **X-Real-IP**. Buktikan bahwa Penny dan Abbey berhasil mendistribusikan lalu lintas dengan tepat.
+
+Membuat Penny dan Abbey sebagai gateway yang meneruskan request dari client menuju server backend.
+
+* Penny → Obladi (`10.86.5.4`) dan Desmond (`10.86.5.5`)
+* Abbey → Oblada (`10.86.5.6`) dan Molly (`10.86.5.7`)
+* Meneruskan header `Host`
+* Meneruskan header `X-Real-IP`
+* Membuktikan bahwa traffic berhasil didistribusikan ke seluruh backend
+
 ---
+
+### A. Konfigurasi Penny sebagai Reverse Proxy
+
+#### 1. Install dan aktifkan module Apache
+
+Pada node **Penny**, aktifkan module yang diperlukan:
+
+```bash
+a2enmod proxy
+a2enmod proxy_http
+a2enmod proxy_balancer
+a2enmod lbmethod_byrequests
+a2enmod headers
+```
+
+#### 2. Membuat konfigurasi Reverse Proxy
+
+Buat file:
+
+```bash
+nano /etc/apache2/sites-available/reverse-proxy.conf
+```
+
+Isi konfigurasi:
+
+```apache
+<VirtualHost *:80>
+    ServerName www.k45.com
+
+    ProxyPreserveHost On
+
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+
+    <Proxy "balancer://vault">
+        BalancerMember http://10.86.5.4
+        BalancerMember http://10.86.5.5
+        ProxySet lbmethod=byrequests
+    </Proxy>
+
+    ProxyPass "/" "balancer://vault/"
+    ProxyPassReverse "/" "balancer://vault/"
+
+    ErrorLog ${APACHE_LOG_DIR}/vault-proxy-error.log
+    CustomLog ${APACHE_LOG_DIR}/vault-proxy-access.log combined
+</VirtualHost>
+```
+
+Konfigurasi tersebut membuat Apache menggunakan Obladi dan Desmond sebagai backend serta menggunakan metode `byrequests` untuk membagi request.
+
+#### 3. Mengaktifkan konfigurasi
+
+```bash
+a2dissite 000-default.conf
+a2ensite reverse-proxy.conf
+apache2ctl configtest
+```
+
+Hasil:
+
+<img width="689" height="47" alt="Screenshot 2026-09-30 at 02 05 35" src="https://github.com/user-attachments/assets/db1a6009-2a24-49bd-81c4-f1487acf558f" />
+
+```text
+Syntax OK
+```
+
+#### 4. Restart Apache
+
+```bash
+service apache2 restart
+```
+
+#### 5. Pengujian Reverse Proxy
+
+Pengujian dilakukan dengan mengakses file pada area vault melalui Penny:
+
+```bash
+curl -s -H "Host: www.k45.com" http://10.86.4.2/arsip/dokumen1.txt
+```
+
+Hasil:
+
+```text
+Arsip desmond - dokumen 1
+```
+
+#### 6. Pengujian Load Balancing
+
+Untuk memastikan request didistribusikan ke kedua backend:
+
+```bash
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -H "Host: www.k45.com" http://10.86.4.2/arsip/dokumen1.txt
+done
+```
+
+Hasil:
+
+<img width="692" height="263" alt="Screenshot 2026-09-30 at 02 04 47" src="https://github.com/user-attachments/assets/8e8f4c63-58ea-47af-8296-de04f6274d4d" />
+
+
+```text
+Arsip obladi - dokumen 1
+Arsip desmond - dokumen 1
+Arsip obladi - dokumen 1
+Arsip desmond - dokumen 1
+Arsip obladi - dokumen 1
+Arsip desmond - dokumen 1
+Arsip obladi - dokumen 1
+Arsip desmond - dokumen 1
+Arsip obladi - dokumen 1
+Arsip desmond - dokumen 1
+```
+
+Hasil tersebut membuktikan bahwa Penny berhasil mendistribusikan request ke **Obladi dan Desmond**.
+
+### B. Konfigurasi Abbey sebagai Reverse Proxy
+
+#### 1. Install Nginx
+
+Pada node **Abbey**:
+
+```bash
+apt update
+apt install nginx -y
+```
+
+Cek versi Nginx:
+
+```bash
+nginx -v
+```
+
+Hasil:
+
+```text
+nginx version: nginx/1.26.3
+```
+
+#### 2. Membuat konfigurasi Reverse Proxy
+
+Edit konfigurasi:
+
+```bash
+nano /etc/nginx/sites-available/default
+```
+
+Isi:
+
+```nginx
+upstream core_backend {
+    server 10.86.5.6;
+    server 10.86.5.7;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name static.k45.com;
+
+    location / {
+        proxy_pass http://core_backend;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+Konfigurasi tersebut membuat Abbey menggunakan Oblada dan Molly sebagai backend.
+
+#### 3. Mengecek konfigurasi Nginx
+
+```bash
+nginx -t
+```
+
+Hasil:
+
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+#### 4. Menjalankan Nginx
+
+```bash
+nginx
+```
+
+#### 5. Pengujian Reverse Proxy
+
+```bash
+curl -s -H "Host: static.k45.com" http://10.86.3.2/
+```
+
+Hasil:
+
+```html
+<h1>Beranda - oblada</h1><p>Area core, layanan web dinamis k45.com</p><a href='/profil'>Lihat Profil</a>
+```
+
+#### 6. Pengujian Load Balancing
+
+```bash
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -H "Host: static.k45.com" http://10.86.3.2/profil
+    echo
+done
+```
+
+Hasil:
+
+```text
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - molly</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - molly</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - molly</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - oblada</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+<h1>Profil - molly</h1><p>Halaman ini diakses tanpa akhiran .php</p><a href='/'>Kembali ke beranda</a>
+```
+
+Hasil tersebut membuktikan bahwa Abbey berhasil mendistribusikan request ke **Oblada dan Molly**.
+
+<img width="693" height="374" alt="Screenshot 2026-09-30 at 02 04 09" src="https://github.com/user-attachments/assets/9d2297bb-8304-46e5-93ce-cf653c033998" />
+
+
+### Hasil Akhir
+
+| Gateway | Backend | IP          | Status   |
+| ------- | ------- | ----------- | -------- |
+| Penny   | Obladi  | `10.86.5.4` | Berhasil |
+| Penny   | Desmond | `10.86.5.5` | Berhasil |
+| Abbey   | Oblada  | `10.86.5.6` | Berhasil |
+| Abbey   | Molly   | `10.86.5.7` | Berhasil |
+
+Penny berhasil dikonfigurasi sebagai reverse proxy Apache untuk area vault dan berhasil mendistribusikan request ke Obladi dan Desmond.
+
+Abbey berhasil dikonfigurasi sebagai reverse proxy Nginx untuk area core dan berhasil mendistribusikan request ke Oblada dan Molly.
+
