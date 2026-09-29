@@ -1503,3 +1503,196 @@ Penny berhasil dikonfigurasi sebagai reverse proxy Apache untuk area vault dan b
 
 Abbey berhasil dikonfigurasi sebagai reverse proxy Nginx untuk area core dan berhasil mendistribusikan request ke Oblada dan Molly.
 
+## 12. Basic Authentication pada `/admin`
+
+### Soal
+
+Membuat Basic Authentication pada path `/admin` di server **Penny**. Hanya username `prabs` dengan password yang telah ditentukan yang dapat mengakses halaman tersebut.
+
+### Tujuan
+
+Membatasi akses ke halaman `/admin` menggunakan username dan password. Path `/admin` juga harus menjadi halaman lokal di Penny dan tidak diteruskan ke backend reverse proxy.
+
+### Langkah-Langkah
+
+#### 1. Install `apache2-utils`
+
+Pada server Penny:
+
+```bash
+apt update
+apt install apache2-utils -y
+```
+
+Package `apache2-utils` sudah tersedia pada sistem.
+
+#### 2. Membuat username dan password
+
+Membuat file password `/etc/apache2/.htpasswd` dengan username `prabs`:
+
+```bash
+htpasswd -c /etc/apache2/.htpasswd prabs
+```
+
+Password dimasukkan sesuai ketentuan soal.
+
+Verifikasi:
+
+```bash
+cat /etc/apache2/.htpasswd
+```
+
+Hasil menunjukkan user `prabs` telah tersimpan dalam bentuk hash.
+
+#### 3. Membuat halaman admin
+
+Membuat direktori:
+
+```bash
+mkdir -p /var/www/admin
+```
+
+Kemudian membuat halaman:
+
+```bash
+cat > /var/www/admin/index.html <<'EOF'
+<h1>Admin Area - Penny</h1>
+<p>Selamat datang di halaman admin.</p>
+EOF
+```
+
+#### 4. Mengatur Basic Authentication
+
+File konfigurasi reverse proxy Penny:
+
+```bash
+nano /etc/apache2/sites-available/reverse-proxy.conf
+```
+
+Konfigurasi `/admin` ditambahkan sebelum reverse proxy utama:
+
+```apache
+ProxyPass "/admin" "!"
+
+Alias /admin /var/www/admin
+
+<Directory /var/www/admin>
+    AuthType Basic
+    AuthName "Admin Area"
+    AuthUserFile /etc/apache2/.htpasswd
+    Require user prabs
+</Directory>
+
+ProxyPass "/" "balancer://vault/"
+ProxyPassReverse "/" "balancer://vault/"
+```
+
+`ProxyPass "/admin" "!"` digunakan agar `/admin` tidak diteruskan ke backend Obladi dan Desmond.
+
+Sedangkan:
+
+```apache
+Require user prabs
+```
+
+membatasi akses hanya untuk username `prabs`.
+
+#### 5. Mengecek konfigurasi Apache
+
+```bash
+apache2ctl configtest
+```
+
+Hasil:
+
+```text
+Syntax OK
+```
+
+Terdapat warning `AH00558` mengenai `ServerName`, tetapi konfigurasi tetap dinyatakan valid dengan `Syntax OK`.
+
+#### 6. Restart Apache
+
+```bash
+service apache2 restart
+```
+
+Apache berhasil di-restart.
+
+#### 7. Pengujian tanpa autentikasi
+
+```bash
+curl -i -H "Host: www.k45.com" http://10.86.4.2/admin
+```
+
+Hasil:
+
+```text
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic realm="Admin Area"
+```
+
+Artinya halaman `/admin` meminta autentikasi.
+
+#### 8. Pengujian dengan user `prabs`
+
+```bash
+curl -i -u 'prabs:pakar_pinter_jadi_gob***' \
+-H "Host: www.k45.com" \
+http://10.86.4.2/admin/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 200 OK
+```
+
+Isi halaman:
+
+```html
+<h1>Admin Area - Penny</h1>
+<p>Selamat datang di halaman admin.</p>
+```
+
+Artinya user `prabs` berhasil melakukan autentikasi dan dapat mengakses halaman admin.
+
+#### 9. Pengujian menggunakan username lain
+
+Untuk memastikan hanya `prabs` yang diperbolehkan:
+
+```bash
+curl -i -u 'admin:pakar_pinter_jadi_gob***' \
+-H "Host: www.k45.com" \
+http://10.86.4.2/admin/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic realm="Admin Area"
+```
+
+Artinya username `admin` ditolak.
+
+### Hasil
+
+<img width="688" height="265" alt="Screenshot 2026-09-30 at 02 31 16" src="https://github.com/user-attachments/assets/02cde83f-edcf-47b1-80b8-dcc0f3c9e584" />
+
+<img width="691" height="338" alt="Screenshot 2026-09-30 at 02 31 33" src="https://github.com/user-attachments/assets/4d4b56f4-61bc-4aea-858f-1bbdaef9efc6" />
+
+
+| Pengujian                               | Hasil              |
+| --------------------------------------- | ------------------ |
+| Tanpa username/password                 | `401 Unauthorized` |
+| User `prabs` + password benar           | `200 OK`           |
+| User `admin` + password benar           | `401 Unauthorized` |
+| `/admin` diteruskan ke backend          | Tidak              |
+| `/admin` berjalan secara lokal di Penny | Ya                 |
+
+### Kesimpulan
+
+Basic Authentication pada path `/admin` berhasil diterapkan di Penny. Halaman `/admin` meminta autentikasi, username `prabs` berhasil masuk, sedangkan username lain ditolak dengan status `401 Unauthorized`.
+
+
