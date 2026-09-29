@@ -659,6 +659,9 @@ dig @10.86.5.3 -x 10.86.5.7 +short   # tedd juga menjawab
 ```
  
 ![](assets/soal8-ptr-prab.png)
+
+
+
 ![](assets/soal8-ptr-tedd.png)
  
 ---
