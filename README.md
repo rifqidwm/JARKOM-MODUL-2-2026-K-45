@@ -3403,6 +3403,8 @@ Restore konfigurasi
 Hapus BIND sementara dari Alpha
 ```
 
+<img width="684" height="500" alt="Screenshot 2026-10-01 at 01 34 27" src="https://github.com/user-attachments/assets/d70076e7-25d1-4f9f-be35-82a391d5fa34" />
+
 Kondisi akhir:
 
 ```text
