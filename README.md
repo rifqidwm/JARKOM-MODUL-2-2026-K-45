@@ -3928,3 +3928,434 @@ HTTP melalui outbound  : 503 Web Page Blocked
 
 **Kesimpulan:** konfigurasi DNS Q19 telah berhasil. Perbedaan hasil HTTP disebabkan oleh filtering/proxy jaringan ketika menggunakan hostname `outbound.k45.com`, bukan karena kegagalan konfigurasi CNAME.
 
+## No. 20 — Persistence Routing dan NAT pada Rootkit
+
+Pada tahap ini dilakukan pengecekan dan konfigurasi agar **IP forwarding dan NAT pada Rootkit tetap berjalan setelah node melakukan restart**.
+
+### 1. Cek Kondisi Awal
+
+Sebelum membuat persistence, kondisi Rootkit adalah:
+
+* IP forwarding aktif.
+* Rule NAT MASQUERADE aktif.
+* Namun konfigurasi IP forwarding belum tersimpan secara persistent.
+* `iptables-persistent` dan `netfilter-persistent` belum terpasang.
+* File `/etc/iptables/rules.v4` belum tersedia.
+
+---
+
+### 2. Membuat IP Forwarding Persistent
+
+Dibuat file konfigurasi:
+
+```bash
+cat > /etc/sysctl.d/99-k45-router.conf <<'EOF'
+net.ipv4.ip_forward=1
+EOF
+```
+
+Isi file:
+
+```bash
+cat /etc/sysctl.d/99-k45-router.conf
+```
+
+Output:
+
+```text
+net.ipv4.ip_forward=1
+```
+
+Kemudian konfigurasi diterapkan:
+
+```bash
+sysctl --system
+```
+
+Output:
+
+```text
+* Applying /etc/sysctl.d/99-k45-router.conf ...
+net.ipv4.ip_forward = 1
+```
+
+Verifikasi:
+
+```bash
+sysctl net.ipv4.ip_forward
+```
+
+Output:
+
+```text
+net.ipv4.ip_forward = 1
+```
+
+Hal ini menunjukkan bahwa **IP forwarding sudah aktif dan memiliki konfigurasi persistent**.
+
+---
+
+### 3. Menyimpan Rule NAT
+
+Rule NAT yang digunakan pada Rootkit:
+
+```bash
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE -s 10.86.0.0/16
+```
+
+Sebelum disimpan, rule diperiksa:
+
+```bash
+iptables -t nat -L POSTROUTING -n -v --line-numbers
+```
+
+Output:
+
+```text
+Chain POSTROUTING (policy ACCEPT 603 packets, 38310 bytes)
+
+num  pkts bytes target       prot opt in out  source          destination
+
+1    205  14891 MASQUERADE  all  --  *   eth0 10.86.0.0/16  0.0.0.0/0
+```
+
+Kemudian dibuat direktori dan rule disimpan:
+
+```bash
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+```
+
+Verifikasi:
+
+```bash
+ls -lh /etc/iptables/rules.v4
+grep -n "MASQUERADE" /etc/iptables/rules.v4
+```
+
+Output:
+
+```text
+-rw-r--r-- 1 root root 280 Sep 30 18:30 /etc/iptables/rules.v4
+
+7:-A POSTROUTING -s 10.86.0.0/16 -o eth0 -j MASQUERADE
+```
+
+---
+
+### 4. Instalasi `iptables-persistent`
+
+Karena file rule saja belum menjamin rule akan dimuat otomatis saat boot, dipasang paket persistence:
+
+```bash
+apt update
+apt install iptables-persistent -y
+```
+
+Output menunjukkan:
+
+```text
+Installing:
+    iptables-persistent
+
+Installing dependencies:
+    netfilter-persistent
+
+Summary:
+    Upgrading: 0, Installing: 2, Removing: 0
+```
+
+Paket yang terpasang:
+
+```text
+ii  iptables-persistent   1.0.23   all   boot-time loader for netfilter rules, iptables plugin
+ii  netfilter-persistent 1.0.23   all   boot-time loader for netfilter configuration
+```
+
+Command tersedia:
+
+```bash
+command -v netfilter-persistent
+```
+
+Output:
+
+```text
+/usr/sbin/netfilter-persistent
+```
+
+---
+
+### 5. Pengujian `netfilter-persistent`
+
+Rule diuji dengan:
+
+```bash
+netfilter-persistent reload
+```
+
+Output:
+
+```text
+run-parts: executing /usr/share/netfilter-persistent/plugins.d/15-ip4tables start
+run-parts: executing /usr/share/netfilter-persistent/plugins.d/25-ip6tables start
+```
+
+Kemudian NAT diperiksa:
+
+```bash
+iptables -t nat -L POSTROUTING -n -v --line-numbers
+```
+
+Output:
+
+```text
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+
+num  pkts bytes target       prot opt in out  source          destination
+
+1      0     0 MASQUERADE   all  --  *   eth0 10.86.0.0/16  0.0.0.0/0
+```
+
+Hal ini membuktikan bahwa rule NAT berhasil dimuat kembali dari konfigurasi persistence.
+
+---
+
+### 6. Membuat Autostart NAT
+
+Rootkit tidak memiliki command `systemctl`, sehingga mekanisme SysV init digunakan.
+
+Dibuat script:
+
+```text
+/etc/init.d/k45-netfilter
+```
+
+Isi script:
+
+```bash
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          k45-netfilter
+# Required-Start:    $network $remote_fs
+# Required-Stop:     $remote_fs
+# Should-Start:      $network
+# Should-Stop:       $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Load K45 iptables rules
+### END INIT INFO
+
+case "$1" in
+    start)
+        /usr/sbin/netfilter-persistent start
+        ;;
+    stop)
+        /usr/sbin/netfilter-persistent stop
+        ;;
+    restart)
+        /usr/sbin/netfilter-persistent stop
+        /usr/sbin/netfilter-persistent start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
+```
+
+Permission dibuat executable:
+
+```bash
+chmod +x /etc/init.d/k45-netfilter
+```
+
+Kemudian autostart dibuat:
+
+```bash
+update-rc.d k45-netfilter defaults
+```
+
+Hasil pengecekan:
+
+```text
+rc2:
+S01k45-netfilter -> ../init.d/k45-netfilter
+
+rc3:
+S01k45-netfilter -> ../init.d/k45-netfilter
+
+rc4:
+S01k45-netfilter -> ../init.d/k45-netfilter
+
+rc5:
+S01k45-netfilter -> ../init.d/k45-netfilter
+```
+
+Artinya script NAT akan dijalankan pada proses boot untuk runlevel yang digunakan.
+
+---
+
+### 7. Pengujian Script Autostart
+
+Script diuji secara manual:
+
+```bash
+/etc/init.d/k45-netfilter start
+```
+
+Output:
+
+```text
+run-parts: executing /usr/share/netfilter-persistent/plugins.d/15-ip4tables start
+run-parts: executing /usr/share/netfilter-persistent/plugins.d/25-ip6tables start
+```
+
+Kemudian NAT diperiksa:
+
+```bash
+iptables -t nat -L POSTROUTING -n -v --line-numbers
+```
+
+Output:
+
+```text
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+
+num  pkts bytes target       prot opt in out  source          destination
+
+1      0     0 MASQUERADE   all  --  *   eth0 10.86.0.0/16  0.0.0.0/0
+```
+
+IP forwarding juga diperiksa:
+
+```bash
+sysctl net.ipv4.ip_forward
+```
+
+Output:
+
+```text
+net.ipv4.ip_forward = 1
+```
+
+---
+
+### 8. Pengujian Setelah Reboot
+
+Rootkit kemudian direstart:
+
+```bash
+reboot
+```
+
+Setelah Rootkit kembali aktif, dilakukan pengecekan interface:
+
+```bash
+ip -br addr
+```
+
+Output penting:
+
+```text
+eth0  UNKNOWN  192.168.122.107/24
+eth1  UNKNOWN  10.86.1.1/24
+eth2  UNKNOWN  10.86.2.1/24
+eth3  UNKNOWN  10.86.3.1/24
+eth4  UNKNOWN  10.86.4.1/24
+eth5  UNKNOWN  10.86.5.1/24
+```
+
+Routing:
+
+```bash
+ip route
+```
+
+Output:
+
+```text
+default via 192.168.122.1 dev eth0 metric 42706
+10.86.1.0/24 dev eth1 proto kernel scope link src 10.86.1.1
+10.86.2.0/24 dev eth2 proto kernel scope link src 10.86.2.1
+10.86.3.0/24 dev eth3 proto kernel scope link src 10.86.3.1
+10.86.4.0/24 dev eth4 proto kernel scope link src 10.86.4.1
+10.86.5.0/24 dev eth5 proto kernel scope link src 10.86.5.1
+192.168.122.0/24 dev eth0 proto kernel scope link src 192.168.122.107
+```
+
+IP forwarding:
+
+```bash
+sysctl net.ipv4.ip_forward
+```
+
+Output:
+
+```text
+net.ipv4.ip_forward = 1
+```
+
+NAT:
+
+```bash
+iptables -t nat -L POSTROUTING -n -v --line-numbers
+```
+
+Output:
+
+```text
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+
+num  pkts bytes target       prot opt in out  source          destination
+
+1      0     0 MASQUERADE   all  --  *   eth0 10.86.0.0/16  0.0.0.0/0
+```
+
+Autostart masih terdaftar:
+
+```bash
+ls -l /etc/rc2.d/ | grep k45-netfilter
+```
+
+Output:
+
+```text
+lrwxrwxrwx 1 root root 23 Sep 30 18:33 S01k45-netfilter -> ../init.d/k45-netfilter
+```
+
+Terakhir dilakukan pengujian koneksi internet:
+
+```bash
+ping -c 3 8.8.8.8
+```
+
+Output:
+
+```text
+PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
+64 bytes from 8.8.8.8: icmp_seq=1 ttl=111 time=19.0 ms
+64 bytes from 8.8.8.8: icmp_seq=2 ttl=111 time=19.7 ms
+64 bytes from 8.8.8.8: icmp_seq=3 ttl=111 time=19.4 ms
+
+--- 8.8.8.8 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss
+rtt min/avg/max/mdev = 19.049/19.374/19.673/0.255 ms
+```
+
+### Kesimpulan Q20 — Rootkit
+
+Konfigurasi routing dan NAT pada Rootkit berhasil dibuat persistent.
+
+Setelah reboot:
+
+* IP forwarding tetap bernilai `1`.
+* Rule MASQUERADE otomatis kembali.
+* Seluruh interface internal kembali dengan IP yang sesuai.
+* Default route tetap tersedia.
+* Script `k45-netfilter` tetap terdaftar pada proses boot.
+* Rootkit berhasil mengakses internet dengan `0% packet loss`.
+
+Dengan demikian, **persistence routing dan NAT pada Rootkit berhasil diverifikasi setelah reboot**.
