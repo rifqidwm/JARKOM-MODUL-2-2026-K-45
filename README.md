@@ -2822,7 +2822,7 @@ epsilon.k45.com → "epsilon"
 
 Selain itu, serial SOA berhasil dinaikkan dari `2026092803` menjadi `2026092804` dan perubahan berhasil disinkronkan dari Prab ke Tedd.
 
-# Q18 — Pengujian DNS TTL, Cache, dan Sinkronisasi Master-Slave
+# 18 — Pengujian DNS TTL, Cache, dan Sinkronisasi Master-Slave
 
 ## Tujuan
 
@@ -3423,4 +3423,508 @@ BIND          → sudah dihentikan
 bind9         → sudah dihapus
 ```
 
+# 19 — DNS CNAME `outbound.k45.com`
+
+## Tujuan
+
+Menambahkan DNS record CNAME:
+
+```text
+outbound.k45.com → http.badssl.com
+```
+
+Kemudian melakukan pengujian:
+
+1. Memastikan record CNAME tersimpan di DNS Master (Prab).
+2. Memastikan perubahan tersinkronisasi ke DNS Slave (Tedd).
+3. Menguji resolusi DNS menggunakan `dig`.
+4. Menguji akses HTTP menggunakan `curl`.
+5. Membandingkan akses langsung ke `http.badssl.com` dengan akses melalui `outbound.k45.com`.
+
+---
+
+# 1. Kondisi Awal
+
+Sebelum melakukan konfigurasi, dilakukan pengecekan serial SOA dan keberadaan record `outbound`.
+
+Perintah yang digunakan di **Prab**:
+
+```bash
+echo "=== SERIAL SEKARANG ==="
+dig @10.86.5.2 k45.com SOA +short
+
+echo
+echo "=== CEK OUTBOUND ==="
+dig @10.86.5.2 outbound.k45.com CNAME +noall +answer
+
+echo
+echo "=== ZONE FILE ==="
+grep -n '^outbound' /etc/bind/db.k45.com
+```
+
+### Hasil
+
+```text
+=== SERIAL SEKARANG ===
+prab.k45.com. admin.k45.com. 2026092812 3600 1800 604800 86400
+
+=== CEK OUTBOUND ===
+
+=== ZONE FILE ===
+```
+
+Hasil tersebut menunjukkan bahwa:
+
+* Serial awal zone adalah `2026092812`.
+* Record `outbound.k45.com` belum tersedia.
+
+---
+
+# 2. Backup Zone File
+
+Sebelum melakukan perubahan, zone file dibuatkan backup terlebih dahulu.
+
+Perintah:
+
+```bash
+cp /etc/bind/db.k45.com /etc/bind/db.k45.com.bak-q19
+```
+
+Backup digunakan agar konfigurasi sebelum Q19 tetap dapat dikembalikan apabila terjadi kesalahan.
+
+---
+
+# 3. Menambahkan CNAME
+
+Record CNAME ditambahkan ke `/etc/bind/db.k45.com`.
+
+Perintah:
+
+```bash
+sed -i '/^abbey/a outbound    IN    CNAME    http.badssl.com.' /etc/bind/db.k45.com
+```
+
+Record yang ditambahkan:
+
+```text
+outbound    IN    CNAME    http.badssl.com.
+```
+
+Artinya:
+
+```text
+outbound.k45.com
+        ↓
+http.badssl.com
+```
+
+---
+
+# 4. Menaikkan SOA Serial
+
+Karena zone file mengalami perubahan, serial SOA harus dinaikkan.
+
+Perintah:
+
+```bash
+sed -i 's/2026092812/2026092813/' /etc/bind/db.k45.com
+```
+
+Sebelum:
+
+```text
+2026092812
+```
+
+Sesudah:
+
+```text
+2026092813
+```
+
+---
+
+# 5. Mengecek Record CNAME dan Serial
+
+Perintah:
+
+```bash
+echo "=== CEK CNAME ==="
+grep -n '^outbound' /etc/bind/db.k45.com
+
+echo
+echo "=== CEK SERIAL ==="
+grep -A1 -n 'SOA' /etc/bind/db.k45.com
+```
+
+### Hasil
+
+```text
+=== CEK CNAME ===
+22:outbound    IN    CNAME    http.badssl.com.
+
+=== CEK SERIAL ===
+2:@     IN    SOA     prab.k45.com. admin.k45.com. (
+3-                    2026092813
+```
+
+Dari hasil tersebut dapat dipastikan bahwa record CNAME dan serial SOA sudah berubah.
+
+---
+
+# 6. Validasi Zone
+
+Sebelum me-restart BIND, konfigurasi zone divalidasi menggunakan `named-checkzone`.
+
+Perintah:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+### Hasil
+
+```text
+zone k45.com/IN: loaded serial 2026092813
+OK
+```
+
+Status:
+
+```text
+VALIDASI ZONE: BERHASIL
+```
+
+Karena hasil validasi adalah `OK`, konfigurasi aman untuk diterapkan.
+
+---
+
+# 7. Restart BIND pada Prab
+
+Pada Prab, `rndc reload` sebelumnya tidak dapat digunakan dengan normal, sehingga BIND direstart secara manual.
+
+Perintah:
+
+```bash
+pkill named
+
+sleep 2
+
+named
+
+sleep 2
+
+pgrep -a named
+```
+
+### Hasil
+
+```text
+1187 named
+```
+
+Hal ini menunjukkan bahwa proses `named` kembali berjalan.
+
+---
+
+# 8. Verifikasi CNAME pada DNS Master Prab
+
+Setelah BIND berjalan kembali, dilakukan pengecekan langsung ke DNS Master Prab.
+
+Perintah:
+
+```bash
+dig @10.86.5.2 outbound.k45.com CNAME +noall +answer
+```
+
+### Hasil
+
+```text
+outbound.k45.com.    86400    IN    CNAME    http.badssl.com.
+```
+
+Kemudian serial SOA dicek:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+```
+
+### Hasil
+
+```text
+prab.k45.com. admin.k45.com. 2026092813 3600 1800 604800 86400
+```
+
+Hasil tersebut menunjukkan bahwa DNS Master Prab sudah menggunakan serial `2026092813` dan record CNAME sudah aktif.
+
+---
+
+# 9. Verifikasi Sinkronisasi DNS Slave Tedd
+
+Selanjutnya dilakukan pengecekan pada Tedd sebagai DNS Slave.
+
+Perintah:
+
+```bash
+echo "=== SERIAL DI TEDD ==="
+dig @10.86.5.3 k45.com SOA +short
+
+echo
+echo "=== CEK CNAME DI TEDD ==="
+dig @10.86.5.3 outbound.k45.com CNAME +noall +answer
+```
+
+### Hasil
+
+```text
+=== SERIAL DI TEDD ===
+prab.k45.com. admin.k45.com. 2026092813 3600 1800 604800 86400
+
+=== CEK CNAME DI TEDD ===
+outbound.k45.com.    86400    IN    CNAME    http.badssl.com.
+```
+
+Hasil tersebut menunjukkan bahwa:
+
+```text
+Prab Serial = 2026092813
+Tedd Serial = 2026092813
+```
+
+dan record CNAME juga tersedia pada Tedd.
+
+Dengan demikian, sinkronisasi zone dari Master ke Slave berhasil.
+
+---
+
+# 10. Pengujian DNS dari Alpha
+
+Pengujian dilakukan dari Alpha menggunakan `dig`.
+
+## 10.1 Pengujian CNAME
+
+Perintah:
+
+```bash
+dig outbound.k45.com CNAME +noall +answer
+```
+
+### Hasil
+
+```text
+outbound.k45.com.    86400    IN    CNAME    http.badssl.com.
+```
+
+Hasil ini menunjukkan bahwa `outbound.k45.com` berhasil diarahkan ke `http.badssl.com`.
+
+---
+
+## 10.2 Pengujian Resolusi A
+
+Perintah:
+
+```bash
+dig outbound.k45.com A +noall +answer
+```
+
+### Hasil
+
+```text
+outbound.k45.com.    86400    IN    CNAME    http.badssl.com.
+http.badssl.com.     299      IN    A        104.154.89.105
+```
+
+Dari hasil tersebut:
+
+```text
+outbound.k45.com
+        ↓ CNAME
+http.badssl.com
+        ↓ A
+104.154.89.105
+```
+
+Artinya DNS berhasil melakukan resolusi dari `outbound.k45.com` hingga IP tujuan.
+
+---
+
+# 11. Pengujian HTTP melalui `outbound.k45.com`
+
+Perintah:
+
+```bash
+curl -I http://outbound.k45.com/
+```
+
+### Hasil
+
+```text
+HTTP/1.1 503 Service Unavailable
+Content-Type: text/html; charset=UTF-8
+Content-Length: 6809
+Connection: close
+P3P: CP="CAO PSA OUR"
+Expires: Thu, 01 Jan 1970 00:00:00 GMT
+Cache-Control: no-store, no-cache, must-revalidate, post-check=0, pre-check=0
+Pragma: no-cache
+```
+
+Kemudian dilakukan pengecekan isi halaman:
+
+```bash
+curl http://outbound.k45.com/
+```
+
+Hasil yang diterima berupa halaman:
+
+```text
+Web Page Blocked
+```
+
+dengan informasi:
+
+```text
+User: 10.4.89.247
+URL: outbound.k45.com/
+Category: grayware
+```
+
+---
+
+# 12. Membandingkan dengan `http.badssl.com`
+
+Untuk memastikan bahwa masalah bukan berasal dari `http.badssl.com`, dilakukan pengujian langsung.
+
+Perintah:
+
+```bash
+curl -I http://http.badssl.com/
+```
+
+### Hasil
+
+```text
+HTTP/1.1 200 OK
+Server: nginx/1.10.3 (Ubuntu)
+Date: Wed, 30 Sep 2026 18:37:47 GMT
+Content-Type: text/html
+Content-Length: 483
+Last-Modified: Tue, 29 Sep 2026 21:02:07 GMT
+Connection: keep-alive
+ETag: "6abc274f-1e3"
+Cache-Control: no-store
+Accept-Ranges: bytes
+```
+
+Sedangkan ketika menggunakan CNAME:
+
+```bash
+curl -I http://outbound.k45.com/
+```
+
+hasilnya:
+
+```text
+HTTP/1.1 503 Service Unavailable
+Content-Type: text/html; charset=UTF-8
+Content-Length: 6809
+```
+
+---
+
+# 13. Analisis Hasil Pengujian
+
+Berdasarkan seluruh pengujian, konfigurasi DNS CNAME **berhasil**.
+
+Bukti:
+
+```text
+outbound.k45.com. 86400 IN CNAME http.badssl.com.
+```
+
+DNS juga berhasil melakukan resolusi target:
+
+```text
+http.badssl.com. 299 IN A 104.154.89.105
+```
+
+Selain itu, serial Master dan Slave sama:
+
+```text
+Prab : 2026092813
+Tedd : 2026092813
+```
+
+Artinya perubahan zone berhasil diterapkan dan disinkronisasi.
+
+Namun, ketika HTTP request dilakukan menggunakan:
+
+```text
+http://outbound.k45.com/
+```
+
+request mendapatkan:
+
+```text
+HTTP/1.1 503 Service Unavailable
+```
+
+dan halaman:
+
+```text
+Web Page Blocked
+```
+
+Sementara akses langsung:
+
+```text
+http://http.badssl.com/
+```
+
+menghasilkan:
+
+```text
+HTTP/1.1 200 OK
+```
+
+Hal ini menunjukkan bahwa **DNS CNAME bukan penyebab kegagalan HTTP**. Resolusi DNS sudah benar. Request melalui hostname `outbound.k45.com` terkena web filtering/proxy jaringan eksternal.
+
+---
+
+# 14. Kesimpulan Q19
+
+Q19 berhasil dikonfigurasi pada sisi DNS.
+
+Record yang berhasil dibuat:
+
+```text
+outbound.k45.com. IN CNAME http.badssl.com.
+```
+
+SOA serial berhasil dinaikkan dari:
+
+```text
+2026092812
+```
+
+menjadi:
+
+```text
+2026092813
+```
+
+Perubahan berhasil diterapkan pada DNS Master Prab dan tersinkronisasi ke DNS Slave Tedd.
+
+Hasil akhir:
+
+```text
+DNS CNAME              : BERHASIL
+DNS Master Prab        : BERHASIL
+DNS Slave Tedd         : BERHASIL
+Resolusi A             : BERHASIL
+HTTP langsung BadSSL   : 200 OK
+HTTP melalui outbound  : 503 Web Page Blocked
+```
+
+**Kesimpulan:** konfigurasi DNS Q19 telah berhasil. Perbedaan hasil HTTP disebabkan oleh filtering/proxy jaringan ketika menggunakan hostname `outbound.k45.com`, bukan karena kegagalan konfigurasi CNAME.
 
