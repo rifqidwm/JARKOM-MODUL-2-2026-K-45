@@ -2822,3 +2822,603 @@ epsilon.k45.com → "epsilon"
 
 Selain itu, serial SOA berhasil dinaikkan dari `2026092803` menjadi `2026092804` dan perubahan berhasil disinkronkan dari Prab ke Tedd.
 
+# Q18 — Pengujian DNS TTL, Cache, dan Sinkronisasi Master-Slave
+
+## Tujuan
+
+Melakukan pengujian perubahan record `abbey.k45.com` dengan TTL 15 detik, menaikkan SOA serial, memastikan perubahan tersinkronisasi dari DNS Master (Prab) ke DNS Slave (Tedd), serta melakukan pengamatan terhadap perilaku caching DNS.
+
+Setelah pengujian selesai, konfigurasi dikembalikan ke kondisi normal.
+
+---
+
+# A. Kondisi Awal
+
+Sebelum melakukan perubahan, record `abbey.k45.com` adalah:
+
+```text
+abbey.k45.com → 10.86.3.2
+TTL            → 86400
+```
+
+SOA serial awal:
+
+```text
+2026092804
+```
+
+Untuk mengecek kondisi awal pada Prab:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+dig @10.86.5.2 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092804 3600 1800 604800 86400
+
+abbey.k45.com. 86400 IN A 10.86.3.2
+```
+
+---
+
+# B. Backup Zone File
+
+Sebelum mengubah zone file, dibuat backup:
+
+```bash
+cp /etc/bind/db.k45.com /etc/bind/db.k45.com.bak-q18
+```
+
+Backup ini digunakan sebagai pengamanan apabila terjadi kesalahan selama konfigurasi.
+
+---
+
+# C. Mengubah Record Abbey
+
+Record `abbey.k45.com` diubah sementara menjadi IP dokumentasi `192.0.2.123` dengan TTL 15 detik.
+
+Perintah:
+
+```bash
+sed -i 's/^abbey[[:space:]]\+86400[[:space:]]\+IN[[:space:]]\+A[[:space:]]\+10\.86\.3\.2$/abbey    15    IN    A    192.0.2.123/' /etc/bind/db.k45.com
+```
+
+Cek hasil perubahan:
+
+```bash
+grep -n '^abbey' /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+21:abbey    15    IN    A    192.0.2.123
+```
+
+---
+
+# D. Menaikkan SOA Serial
+
+Serial dinaikkan dari:
+
+```text
+2026092804
+```
+
+menjadi:
+
+```text
+2026092805
+```
+
+Perintah:
+
+```bash
+sed -i 's/2026092804/2026092805/' /etc/bind/db.k45.com
+```
+
+Cek:
+
+```bash
+grep -A1 -n 'SOA' /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+2:@ IN SOA prab.k45.com. admin.k45.com. (
+3-    2026092805
+```
+
+---
+
+# E. Validasi Zone
+
+Sebelum menjalankan BIND, konfigurasi zone diperiksa:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+zone k45.com/IN: loaded serial 2026092805
+OK
+```
+
+Artinya zone file valid.
+
+---
+
+# F. Restart BIND pada Prab
+
+Pada Prab tidak digunakan `systemctl`, sehingga BIND direstart secara manual:
+
+```bash
+pkill named
+sleep 2
+named
+sleep 2
+```
+
+Verifikasi:
+
+```bash
+pgrep -a named
+```
+
+Kemudian cek record:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+dig @10.86.5.2 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092805 3600 1800 604800 86400
+
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+---
+
+# G. Verifikasi Sinkronisasi ke Tedd
+
+Pada Tedd dilakukan pengecekan SOA dan record Abbey:
+
+```bash
+dig @10.86.5.3 k45.com SOA +short
+dig @10.86.5.3 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092805 3600 1800 604800 86400
+
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+Karena serial dan record pada Tedd sama dengan Prab, sinkronisasi master-slave berhasil.
+
+---
+
+# H. Menyiapkan Alpha sebagai Caching Resolver
+
+Untuk menguji caching DNS, Alpha sementara dipasang BIND9.
+
+## 1. Install BIND9
+
+Pada Alpha:
+
+```bash
+apt update
+apt install bind9 -y
+```
+
+BIND yang terpasang adalah:
+
+```text
+BIND 9.20.26
+```
+
+## 2. Konfigurasi `named.conf.options`
+
+File:
+
+```bash
+nano /etc/bind/named.conf.options
+```
+
+Isi:
+
+```conf
+options {
+    directory "/var/cache/bind";
+
+    listen-on { 10.86.1.2; };
+    listen-on-v6 { none; };
+
+    allow-query { 10.86.0.0/16; localhost; };
+
+    recursion yes;
+
+    forwarders {
+        192.168.122.1;
+    };
+};
+```
+
+## 3. Konfigurasi forwarding untuk `k45.com`
+
+File:
+
+```bash
+nano /etc/bind/named.conf.local
+```
+
+Isi:
+
+```conf
+zone "k45.com" {
+    type forward;
+    forward only;
+    forwarders { 10.86.5.2; };
+};
+```
+
+Artinya query untuk domain `k45.com` dari Alpha akan diteruskan ke DNS Master Prab.
+
+## 4. Validasi konfigurasi
+
+```bash
+named-checkconf
+```
+
+Tidak adanya output menunjukkan konfigurasi valid.
+
+## 5. Menjalankan BIND Alpha
+
+```bash
+pkill named 2>/dev/null || true
+sleep 1
+named
+sleep 2
+```
+
+Verifikasi:
+
+```bash
+pgrep -a named
+```
+
+---
+
+# I. Verifikasi Caching Resolver Alpha
+
+Query dari Alpha:
+
+```bash
+dig @10.86.1.2 abbey.k45.com A +noall +answer
+```
+
+Pada saat record masih menggunakan IP baru, hasil:
+
+```text
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+TTL kemudian dapat diamati dengan query berulang.
+
+Contoh:
+
+```bash
+for i in $(seq 1 20); do
+    echo -n "[$i] "
+    dig @10.86.1.2 abbey.k45.com A +noall +answer
+    sleep 1
+done
+```
+
+Hasil pengamatan menunjukkan TTL menurun:
+
+```text
+[1]  abbey.k45.com. 15 IN A 192.0.2.123
+[2]  abbey.k45.com. 14 IN A 192.0.2.123
+[3]  abbey.k45.com. 13 IN A 192.0.2.123
+...
+[13] abbey.k45.com. 2 IN A 192.0.2.123
+[14] abbey.k45.com. 14 IN A 192.0.2.123
+```
+
+TTL kembali menjadi sekitar 15 detik setelah cache diperbarui.
+
+Hal ini menunjukkan bahwa Alpha memang melakukan caching terhadap hasil query DNS.
+
+---
+
+# J. Percobaan Perubahan IP Kedua
+
+Untuk menguji perubahan dari IP lama ke IP baru, record sementara dikembalikan ke IP lama:
+
+```text
+abbey.k45.com. 15 IN A 10.86.3.2
+```
+
+Serial dinaikkan menjadi:
+
+```text
+2026092810
+```
+
+Validasi:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+Restart:
+
+```bash
+pkill named
+sleep 2
+named
+sleep 2
+```
+
+Verifikasi:
+
+```bash
+dig @10.86.5.2 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+abbey.k45.com. 15 IN A 10.86.3.2
+```
+
+Kemudian dibuat perubahan otomatis setelah beberapa detik menjadi:
+
+```text
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+Serial dinaikkan menjadi:
+
+```text
+2026092811
+```
+
+Setelah perubahan:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+dig @10.86.5.2 abbey.k45.com A +noall +answer
+```
+
+Hasil akhir pengujian:
+
+```text
+prab.k45.com. admin.k45.com. 2026092811 3600 1800 604800 86400
+
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+Tedd juga berhasil mengikuti:
+
+```bash
+dig @10.86.5.3 k45.com SOA +short
+dig @10.86.5.3 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092811 3600 1800 604800 86400
+
+abbey.k45.com. 15 IN A 192.0.2.123
+```
+
+---
+
+# K. Hasil Pengujian TTL
+
+Pengujian menunjukkan bahwa:
+
+1. Record dapat diberikan TTL pendek sebesar 15 detik.
+2. TTL pada resolver Alpha berkurang seiring waktu.
+3. Setelah cache diperbarui, TTL kembali mendekati 15 detik.
+4. Perubahan record pada Prab menyebabkan SOA serial berubah.
+5. Perubahan tersebut berhasil disinkronkan ke Tedd.
+
+Pada percobaan akhir, Alpha sudah memperoleh IP baru sejak query pertama, sehingga bukti spesifik bahwa Alpha masih mengembalikan IP lama tepat setelah perubahan authoritative belum berhasil ditangkap.
+
+Oleh karena itu, hasil yang dicatat adalah hasil yang benar-benar diperoleh dari pengujian, tanpa mengklaim fase cache lama berhasil diamati.
+
+---
+
+# L. Restore Konfigurasi Q18
+
+Setelah pengujian selesai, konfigurasi harus dikembalikan ke kondisi normal.
+
+Record Abbey dikembalikan:
+
+```text
+abbey.k45.com. 86400 IN A 10.86.3.2
+```
+
+Perintah:
+
+```bash
+sed -i 's/^abbey[[:space:]]\+15[[:space:]]\+IN[[:space:]]\+A[[:space:]]\+192\.0\.2\.123$/abbey    86400    IN    A    10.86.3.2/' /etc/bind/db.k45.com
+```
+
+SOA serial dinaikkan menjadi:
+
+```text
+2026092812
+```
+
+Perintah:
+
+```bash
+sed -i 's/2026092811/2026092812/' /etc/bind/db.k45.com
+```
+
+Validasi:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+zone k45.com/IN: loaded serial 2026092812
+OK
+```
+
+Restart BIND:
+
+```bash
+pkill named
+sleep 2
+named
+sleep 2
+```
+
+Verifikasi Prab:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+dig @10.86.5.2 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092812 3600 1800 604800 86400
+
+abbey.k45.com. 86400 IN A 10.86.3.2
+```
+
+---
+
+# M. Verifikasi Restore Tedd
+
+```bash
+dig @10.86.5.3 k45.com SOA +short
+dig @10.86.5.3 abbey.k45.com A +noall +answer
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092812 3600 1800 604800 86400
+
+abbey.k45.com. 86400 IN A 10.86.3.2
+```
+
+Dengan demikian Prab dan Tedd sudah kembali ke konfigurasi normal.
+
+---
+
+# N. Membersihkan BIND Sementara pada Alpha
+
+Karena BIND pada Alpha hanya digunakan untuk pengujian Q18, service tersebut dihentikan:
+
+```bash
+pkill named 2>/dev/null || true
+sleep 2
+```
+
+Verifikasi:
+
+```bash
+pgrep -a named || echo "BIND sudah berhenti"
+```
+
+Hasil:
+
+```text
+BIND sudah berhenti
+```
+
+Kemudian paket sementara dihapus:
+
+```bash
+apt remove bind9 bind9-utils dns-root-data -y
+```
+
+Verifikasi akhir:
+
+```bash
+pgrep -a named || echo "BIND Alpha sudah tidak berjalan"
+```
+
+Hasil:
+
+```text
+BIND Alpha sudah tidak berjalan
+```
+
+---
+
+# O. Kesimpulan
+
+Q18 telah dilakukan dengan tahapan:
+
+```text
+Backup zone
+    ↓
+Ubah abbey.k45.com
+    ↓
+TTL 15 detik
+    ↓
+Naikkan SOA serial
+    ↓
+Validasi named-checkzone
+    ↓
+Restart BIND Prab
+    ↓
+Verifikasi Prab
+    ↓
+Verifikasi sinkronisasi Tedd
+    ↓
+Pasang caching resolver sementara di Alpha
+    ↓
+Amati TTL cache
+    ↓
+Uji perubahan IP
+    ↓
+Restore konfigurasi
+    ↓
+Hapus BIND sementara dari Alpha
+```
+
+Kondisi akhir:
+
+```text
+Prab:
+abbey.k45.com → 10.86.3.2
+TTL           → 86400
+Serial        → 2026092812
+
+Tedd:
+abbey.k45.com → 10.86.3.2
+TTL           → 86400
+Serial        → 2026092812
+
+Alpha:
+BIND          → sudah dihentikan
+bind9         → sudah dihapus
+```
+
+
