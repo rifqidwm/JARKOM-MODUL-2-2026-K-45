@@ -2543,3 +2543,282 @@ static.k45.com  → 250 complete, 0 failed
 
 Hasil pengujian juga menunjukkan bahwa kedua server dapat melayani request HTTP dengan baik pada konfigurasi pengujian tersebut.
 
+# No. 17 — TXT Record DNS
+
+## Tujuan
+
+Menambahkan TXT record pada DNS untuk seluruh klien sayap kiri dan sayap kanan, yaitu:
+
+* Alpha
+* Beta
+* Gamma
+* Delta
+* Epsilon
+
+Ketika DNS melakukan query TXT terhadap domain masing-masing, DNS harus mengembalikan teks berupa nama hostname tersebut.
+
+Contoh:
+
+```text
+alpha.k45.com → "alpha"
+```
+
+DNS Master berada pada **Prab (`10.86.5.2`)**, sedangkan **Tedd (`10.86.5.3`)** berperan sebagai DNS Slave.
+
+---
+
+## 1. Mengecek A Record yang Sudah Ada
+
+Pada Prab dilakukan pengecekan zone file:
+
+```bash
+grep -nE 'alpha|beta|gamma|delta|epsilon|SOA' /etc/bind/db.k45.com
+```
+
+Hasil awal:
+
+```text
+24:alpha   IN    A    10.86.1.2
+25:beta    IN    A    10.86.1.3
+26:gamma   IN    A    10.86.1.4
+28:delta   IN    A    10.86.2.2
+29:epsilon IN    A    10.86.2.3
+```
+
+---
+
+## 2. Menambahkan TXT Record
+
+Sebelum melakukan perubahan, dibuat backup zone file:
+
+```bash
+cp /etc/bind/db.k45.com /etc/bind/db.k45.com.bak-q17
+```
+
+Kemudian ditambahkan TXT record:
+
+```text
+alpha    IN    TXT    "alpha"
+beta     IN    TXT    "beta"
+gamma    IN    TXT    "gamma"
+delta    IN    TXT    "delta"
+epsilon  IN    TXT    "epsilon"
+```
+
+Hasil pengecekan:
+
+```bash
+grep -nE 'alpha|beta|gamma|delta|epsilon' /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+24:alpha   IN    A      10.86.1.2
+25:alpha   IN    TXT    "alpha"
+
+26:beta    IN    A      10.86.1.3
+27:beta    IN    TXT    "beta"
+
+28:gamma   IN    A      10.86.1.4
+29:gamma   IN    TXT    "gamma"
+
+31:delta   IN    A      10.86.2.2
+32:delta   IN    TXT    "delta"
+
+33:epsilon IN    A      10.86.2.3
+34:epsilon IN    TXT    "epsilon"
+```
+
+---
+
+## 3. Validasi Zone
+
+Serial sebelum perubahan:
+
+```text
+2026092803
+```
+
+Validasi zone dilakukan dengan:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+zone k45.com/IN: loaded serial 2026092803
+OK
+```
+
+---
+
+## 4. Menaikkan Serial SOA
+
+Serial dinaikkan dari:
+
+```text
+2026092803
+```
+
+menjadi:
+
+```text
+2026092804
+```
+
+Perintah:
+
+```bash
+sed -i 's/2026092803/2026092804/' /etc/bind/db.k45.com
+```
+
+Kemudian dilakukan validasi:
+
+```bash
+named-checkzone k45.com /etc/bind/db.k45.com
+```
+
+Hasil:
+
+```text
+zone k45.com/IN: loaded serial 2026092804
+OK
+```
+
+---
+
+## 5. Reload DNS Master
+
+Perintah `rndc reload k45.com` tidak berhasil karena koneksi `rndc` ditolak.
+
+Sebagai gantinya, proses `named` direstart secara manual:
+
+```bash
+pkill named
+sleep 2
+named
+sleep 2
+```
+
+Kemudian dicek:
+
+```bash
+pgrep -a named
+```
+
+Hasil:
+
+```text
+804 named
+```
+
+Kemudian serial pada Prab diverifikasi:
+
+```bash
+dig @10.86.5.2 k45.com SOA +short
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092804 3600 1800 604800 86400
+```
+
+Artinya DNS Master Prab sudah menggunakan serial terbaru.
+
+---
+
+## 6. Verifikasi Sinkronisasi Tedd
+
+Pada Tedd dilakukan:
+
+```bash
+dig @10.86.5.3 k45.com SOA +short
+```
+
+Hasil:
+
+```text
+prab.k45.com. admin.k45.com. 2026092804 3600 1800 604800 86400
+```
+
+Serial Prab dan Tedd sama-sama:
+
+```text
+2026092804
+```
+
+Artinya perubahan zone berhasil disinkronkan dari DNS Master Prab ke DNS Slave Tedd.
+
+---
+
+## 7. Verifikasi TXT Record
+
+Dilakukan pengecekan TXT record dari DNS Master Prab dan DNS Slave Tedd:
+
+```bash
+for host in alpha beta gamma delta epsilon; do
+    echo "=== $host.k45.com ==="
+    echo "PRAB:"
+    dig @10.86.5.2 "$host.k45.com" TXT +short
+    echo "TEDD:"
+    dig @10.86.5.3 "$host.k45.com" TXT +short
+    echo
+done
+```
+
+Hasil:
+
+```text
+=== alpha.k45.com ===
+PRAB:
+"alpha"
+TEDD:
+"alpha"
+
+=== beta.k45.com ===
+PRAB:
+"beta"
+TEDD:
+"beta"
+
+=== gamma.k45.com ===
+PRAB:
+"gamma"
+TEDD:
+"gamma"
+
+=== delta.k45.com ===
+PRAB:
+"delta"
+TEDD:
+"delta"
+
+=== epsilon.k45.com ===
+PRAB:
+"epsilon"
+TEDD:
+"epsilon"
+```
+
+---
+
+## Kesimpulan
+
+TXT record untuk seluruh klien Alpha, Beta, Gamma, Delta, dan Epsilon berhasil ditambahkan pada DNS.
+
+Hasil query menunjukkan:
+
+```text
+alpha.k45.com   → "alpha"
+beta.k45.com    → "beta"
+gamma.k45.com   → "gamma"
+delta.k45.com   → "delta"
+epsilon.k45.com → "epsilon"
+```
+
+Selain itu, serial SOA berhasil dinaikkan dari `2026092803` menjadi `2026092804` dan perubahan berhasil disinkronkan dari Prab ke Tedd.
+
