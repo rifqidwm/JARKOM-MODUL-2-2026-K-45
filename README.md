@@ -2341,4 +2341,205 @@ Konfigurasi No. 15 berhasil:
 * File PHP pada `/orion` tidak dieksekusi dan ditampilkan sebagai source code.
 * DNS `static.k45.com` berhasil mengarah ke Abbey (`10.86.3.2`).
 
+# No. 16 — ApacheBench
+
+## Tujuan
+
+Melakukan pengujian performa HTTP menggunakan ApacheBench (`ab`) dengan:
+
+* Total request: `250`
+* Concurrency: `10`
+* Target:
+
+  * `http://www.k45.com/`
+  * `http://static.k45.com/`
+
+---
+
+## 1. Install ApacheBench
+
+Pengujian dilakukan dari **Alpha**.
+
+```bash
+apt update
+apt install apache2-utils -y
+```
+
+Verifikasi:
+
+```bash
+which ab
+ab -V
+```
+
+Output:
+
+```text
+/usr/bin/ab
+
+This is ApacheBench, Version 2.3
+```
+
+> Catatan: repository `debian-security` sempat menghasilkan error signature verification, tetapi paket `apache2-utils` tetap berhasil diinstal dari repository Debian utama.
+
+---
+
+## 2. Verifikasi DNS
+
+```bash
+getent hosts www.k45.com
+getent hosts static.k45.com
+```
+
+Hasil:
+
+```text
+10.86.4.2       penny.k45.com www.k45.com
+10.86.3.2       abbey.k45.com static.k45.com
+```
+
+Artinya:
+
+* `www.k45.com` mengarah ke Penny (`10.86.4.2`)
+* `static.k45.com` mengarah ke Abbey (`10.86.3.2`)
+
+---
+
+## 3. Verifikasi HTTP
+
+### [www.k45.com](http://www.k45.com)
+
+```bash
+curl -I http://www.k45.com/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 200 OK
+Server: Apache/2.4.68 (Debian)
+Content-Length: 10703
+Content-Type: text/html
+```
+
+### static.k45.com
+
+```bash
+curl -I http://static.k45.com/
+```
+
+Hasil:
+
+```text
+HTTP/1.1 200 OK
+Server: nginx
+Content-Length: 615
+Content-Type: text/html
+```
+
+Kedua web server dapat diakses dengan normal.
+
+---
+
+# 4. Benchmark [www.k45.com](http://www.k45.com)
+
+Perintah:
+
+```bash
+ab -n 250 -c 10 http://www.k45.com/
+```
+
+Hasil utama:
+
+```text
+Concurrency Level:       10
+Time taken for tests:   0.094 seconds
+Complete requests:      250
+Failed requests:        0
+Requests per second:    2672.48 [#/sec] (mean)
+Time per request:       3.742 [ms] (mean)
+Transfer rate:          28648.28 [Kbytes/sec] received
+```
+
+Detail koneksi:
+
+```text
+Connect:       1 ms
+Processing:    2 ms
+Waiting:       2 ms
+Total:         4 ms
+```
+
+Request paling lama:
+
+```text
+100%    6 ms
+```
+
+---
+
+# 5. Benchmark static.k45.com
+
+Perintah:
+
+```bash
+ab -n 250 -c 10 http://static.k45.com/
+```
+
+Hasil utama:
+
+```text
+Concurrency Level:       10
+Time taken for tests:   0.051 seconds
+Complete requests:      250
+Failed requests:        0
+Requests per second:    4899.75 [#/sec] (mean)
+Time per request:       2.041 [ms] (mean)
+Transfer rate:          4024.11 [Kbytes/sec] received
+```
+
+Detail koneksi:
+
+```text
+Connect:       1 ms
+Processing:    1 ms
+Waiting:       1 ms
+Total:         2 ms
+```
+
+Request paling lama:
+
+```text
+100%    4 ms
+```
+
+---
+
+# 6. Ringkasan Hasil
+
+| Parameter         | [www.k45.com](http://www.k45.com) | static.k45.com |
+| ----------------- | --------------------------------: | -------------: |
+| Server            |                            Apache |          Nginx |
+| Total Request     |                               250 |            250 |
+| Concurrency       |                                10 |             10 |
+| Complete Requests |                               250 |            250 |
+| Failed Requests   |                                 0 |              0 |
+| Time Taken        |                           0.094 s |        0.051 s |
+| Requests/sec      |                           2672.48 |        4899.75 |
+| Time/request      |                          3.742 ms |       2.041 ms |
+| Transfer Rate     |                     28648.28 KB/s |   4024.11 KB/s |
+| Max Request Time  |                              6 ms |           4 ms |
+
+## Kesimpulan
+
+Pengujian ApacheBench berhasil dilakukan terhadap `www.k45.com` dan `static.k45.com` dengan `250` request dan concurrency `10`.
+
+Kedua target berhasil menyelesaikan seluruh request tanpa kegagalan:
+
+```text
+www.k45.com     → 250 complete, 0 failed
+static.k45.com  → 250 complete, 0 failed
+```
+
+Hasil pengujian juga menunjukkan bahwa kedua server dapat melayani request HTTP dengan baik pada konfigurasi pengujian tersebut.
 
