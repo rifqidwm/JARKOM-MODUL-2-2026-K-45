@@ -2029,4 +2029,316 @@ Konfigurasi access log pada seluruh server backend `vault` dan `core` telah berh
 
 <img width="694" height="365" alt="Screenshot 2026-09-30 at 02 59 20" src="https://github.com/user-attachments/assets/1ab970d6-7e04-4667-8676-699b2e74b87b" />
 
+## 15. Konfigurasi Web Server `/eternal` dan `/orion`
+
+### A. Penny — `/eternal`
+
+Pada server **Penny (`10.86.4.2`)**, dibuat path `/eternal` yang mengarah ke directory `/var/www/eternal`.
+
+Path ini digunakan untuk menjalankan file PHP menggunakan **PHP-FPM**.
+
+#### 1. Membuat directory
+
+```bash
+mkdir -p /var/www/eternal
+```
+
+#### 2. Membuat file PHP
+
+```bash
+cat > /var/www/eternal/index.php <<'EOF'
+<?php
+echo "ETERNAL PHP BERHASIL";
+?>
+EOF
+```
+
+#### 3. Mengatur permission
+
+```bash
+chown -R www-data:www-data /var/www/eternal
+chmod -R 755 /var/www/eternal
+```
+
+#### 4. Membuat konfigurasi Apache
+
+File konfigurasi:
+
+```text
+/etc/apache2/conf-available/eternal.conf
+```
+
+Konfigurasi:
+
+```apache
+ProxyPass "/eternal/" "!"
+
+Alias /eternal/ /var/www/eternal/
+
+<Directory /var/www/eternal>
+    Options Indexes FollowSymLinks
+    AllowOverride None
+    Require all granted
+    DirectoryIndex index.php index.html
+
+    <FilesMatch "\.php$">
+        SetHandler "proxy:unix:/run/php/php8.4-fpm.sock|fcgi://localhost/"
+    </FilesMatch>
+</Directory>
+```
+
+`ProxyPass "/eternal/" "!"` digunakan agar request `/eternal/` tidak diteruskan ke reverse proxy backend, tetapi dilayani langsung oleh Penny.
+
+`Alias` menghubungkan URL `/eternal/` dengan directory `/var/www/eternal/`.
+
+`SetHandler` digunakan agar file PHP diproses oleh PHP-FPM.
+
+#### 5. Enable konfigurasi
+
+```bash
+a2enconf eternal
+```
+
+#### 6. Mengecek konfigurasi Apache
+
+```bash
+apache2ctl configtest
+```
+
+Hasil:
+
+```text
+Syntax OK
+```
+
+#### 7. Reload Apache
+
+```bash
+apache2ctl -k graceful
+```
+
+#### 8. Mengecek socket PHP-FPM
+
+```bash
+find /run/php -maxdepth 1 -type s -name '*.sock'
+```
+
+Hasil:
+
+```text
+/run/php/php8.4-fpm.sock
+```
+
+#### 9. Pengujian melalui localhost
+
+```bash
+curl http://localhost/eternal/
+```
+
+Hasil:
+
+```text
+ETERNAL PHP BERHASIL
+```
+
+#### 10. Pengujian melalui hostname
+
+```bash
+curl http://penny.k45.com/eternal/
+```
+
+Hasil:
+
+```text
+ETERNAL PHP BERHASIL
+```
+
+Hasil tersebut menunjukkan bahwa file PHP pada `/eternal` berhasil dieksekusi menggunakan PHP-FPM.
+
+---
+
+### B. Abbey — `/orion`
+
+Pada server **Abbey (`10.86.3.2`)**, dibuat path `/orion` yang mengarah ke directory `/var/www/orion`.
+
+Berbeda dengan `/eternal`, directory `/orion` dibuat sebagai **static directory**, sehingga file PHP di dalamnya tidak dieksekusi.
+
+#### 1. Membuat directory
+
+```bash
+mkdir -p /var/www/orion
+```
+
+#### 2. Membuat file `index.html`
+
+```bash
+cat > /var/www/orion/index.html <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Orion</title>
+</head>
+<body>
+    <h1>ORION STATIC BERHASIL</h1>
+</body>
+</html>
+EOF
+```
+
+#### 3. Membuat file PHP untuk pengujian
+
+```bash
+cat > /var/www/orion/test.php <<'EOF'
+<?php
+echo "PHP INI TIDAK BOLEH DIEKSEKUSI";
+?>
+EOF
+```
+
+#### 4. Mengatur permission
+
+```bash
+chown -R www-data:www-data /var/www/orion
+chmod -R 755 /var/www/orion
+```
+
+#### 5. Membuat konfigurasi Nginx
+
+File:
+
+```text
+/etc/nginx/conf.d/orion.conf
+```
+
+Konfigurasi:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name static.k45.com;
+
+    location ^~ /orion/ {
+        root /var/www;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+`location ^~ /orion/` digunakan agar request pada `/orion/` diproses sebagai static content.
+
+Tidak terdapat konfigurasi PHP-FPM pada location tersebut, sehingga file `.php` tidak dieksekusi.
+
+#### 6. Mengecek konfigurasi Nginx
+
+```bash
+nginx -t
+```
+
+Hasil:
+
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+#### 7. Reload Nginx
+
+```bash
+nginx -s reload
+```
+
+#### 8. Pengujian `index.html`
+
+```bash
+curl -H "Host: static.k45.com" http://127.0.0.1/orion/
+```
+
+Hasil:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Orion</title>
+</head>
+<body>
+    <h1>ORION STATIC BERHASIL</h1>
+</body>
+</html>
+```
+
+#### 9. Pengujian bahwa PHP tidak dieksekusi
+
+```bash
+curl -H "Host: static.k45.com" http://127.0.0.1/orion/test.php
+```
+
+Hasil:
+
+```php
+<?php
+echo "PHP INI TIDAK BOLEH DIEKSEKUSI";
+?>
+```
+
+Karena source code PHP ditampilkan secara langsung, PHP tidak dieksekusi oleh Nginx.
+
+#### 10. Pengujian menggunakan hostname
+
+```bash
+getent hosts static.k45.com
+```
+
+Hasil:
+
+```text
+10.86.3.2    abbey.k45.com static.k45.com
+```
+
+Kemudian:
+
+```bash
+curl http://static.k45.com/orion/
+```
+
+Hasil:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Orion</title>
+</head>
+<body>
+    <h1>ORION STATIC BERHASIL</h1>
+</body>
+</html>
+```
+
+Pengujian file PHP:
+
+```bash
+curl http://static.k45.com/orion/test.php
+```
+
+Hasil:
+
+```php
+<?php
+echo "PHP INI TIDAK BOLEH DIEKSEKUSI";
+?>
+```
+
+### Kesimpulan
+
+Konfigurasi No. 15 berhasil:
+
+* **Penny `/eternal`** berhasil melayani dan mengeksekusi PHP menggunakan PHP-FPM.
+* **Abbey `/orion`** berhasil melayani static content.
+* File PHP pada `/orion` tidak dieksekusi dan ditampilkan sebagai source code.
+* DNS `static.k45.com` berhasil mengarah ke Abbey (`10.86.3.2`).
+
 
