@@ -1,4 +1,4 @@
-# Cara Pakai Script JARKOM Modul 2 K45
+# Cara Pakai Script 1-10
 
 Script di folder ini menjalankan seluruh konfigurasi soal 1 sampai 10. Semua script **aman dijalankan berulang kali**.
 
