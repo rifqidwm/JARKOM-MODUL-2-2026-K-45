@@ -6,7 +6,7 @@ set -e
 IP=$(hostname -I | tr ' ' '\n' | grep '^10\.86\.' | head -1)
 [ "$IP" = '10.86.5.2' ] || { echo 'No.17 hanya di Prab (10.86.5.2).'; exit 1; }
 
-ZONE=${ZONE:-/etc/bind/db.k45.com}
+ZONE=${ZONE:-/etc/bind/zones/db.k45.com}
 
 bump_serial() {   # serial ada di baris setelah baris SOA
   local ln old new
